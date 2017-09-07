@@ -2576,6 +2576,46 @@ var _ = Describe("AppManager Tests", func() {
 				Expect(len(rs.Policies[0].Rules)).To(Equal(2))
 			})
 
+			It("does not crash if ingress.class is not f5", func() {
+				// https://github.com/F5Networks/k8s-bigip-ctlr/issues/311
+				ingressConfig := v1beta1.IngressSpec{
+					Backend: &v1beta1.IngressBackend{
+						ServiceName: "foo",
+						ServicePort: intstr.IntOrString{IntVal: 80},
+					},
+				}
+				// Add a new Ingress
+				ingress := test.NewIngress("ingress", "1", namespace, ingressConfig,
+					map[string]string{
+						"virtual-server.f5.com/ip":        "1.2.3.4",
+						"kubernetes.io/ingress.class":     "nginx",
+						"virtual-server.f5.com/partition": "velcro",
+					})
+				r := mockMgr.addIngress(ingress)
+				Expect(r).To(BeTrue(), "Ingress resource should be processed.")
+				resources := mockMgr.resources()
+				Expect(resources.Count()).To(Equal(1))
+				// Associate a service
+				fooSvc := test.NewService("foo", "1", namespace, "NodePort",
+					[]v1.ServicePort{{Port: 80, NodePort: 37001}})
+				r = mockMgr.addService(fooSvc)
+				Expect(r).To(BeTrue(), "Service should be processed.")
+
+				// FIXME(Andrew): I think everything below here should be inverted -
+				// we should make sure we *don't* configure this.
+				rs, ok := resources.Get(
+					serviceKey{"foo", 80, "default"}, "default_ingress-ingress_http")
+				Expect(ok).To(BeTrue(), "Ingress should be accessible.")
+				Expect(rs).ToNot(BeNil(), "Ingress should be object.")
+				Expect(rs.MetaData.Active).To(BeTrue())
+
+				Expect(rs.Pools[0].Balance).To(Equal("round-robin"))
+				Expect(rs.Virtual.Mode).To(Equal("http"))
+				Expect(rs.Virtual.Partition).To(Equal("velcro"))
+				Expect(rs.Virtual.VirtualAddress.BindAddr).To(Equal("1.2.3.4"))
+				Expect(rs.Virtual.VirtualAddress.Port).To(Equal(int32(80)))
+			})
+
 			It("handles ingress ssl profiles", func() {
 				svcName := "foo"
 				var svcPort int32 = 443
